@@ -22,7 +22,8 @@ const ROTEIRO_TOOL = {
       },
       roteiro: {
         type: "string",
-        description: "Roteiro completo em 4-6 parágrafos curtos, com o enquadramento de direita, pronto para narração.",
+        description:
+          "Roteiro completo, em 10 a 14 parágrafos, com o enquadramento de direita, pronto para narração. Precisa render aproximadamente 7 a 8 minutos falado (cerca de 1000 a 1200 palavras somando gancho + roteiro + encerramento, a ~150 palavras/minuto). Desenvolva contexto, antecedentes do tema, diferentes ângulos da mesma linha editorial e implicações — sem inventar fatos, números, datas ou falas específicas que não estejam no resumo da notícia ou no conhecimento público amplamente estabelecido.",
       },
       encerramento: {
         type: "string",
@@ -81,6 +82,8 @@ Fonte: ${source || "desconhecida"}
 Categoria: ${category || "Geral"}
 Resumo: ${summary || title}
 
+Meta de duração: o roteiro completo (gancho + corpo + encerramento) precisa render entre 7 e 8 minutos de narração — em torno de 1000 a 1200 palavras no total, a um ritmo de fala natural de ~150 palavras por minuto. Como o resumo da notícia é curto, ganhe esse tempo desenvolvendo contexto (antecedentes do tema, como isso se encaixa no cenário político mais amplo), explicando implicações, e reforçando o enquadramento de direita sob diferentes ângulos — não inventando fatos, números, datas ou falas específicas que não estejam no resumo ou no conhecimento público já estabelecido sobre o tema.
+
 Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos os campos.`;
 
   try {
@@ -95,7 +98,7 @@ Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos o
         // Modelo bom custo-benefício pra esse tipo de texto. Pra economizar
         // ainda mais, troque por "claude-haiku-4-5-20251001".
         model: "claude-sonnet-5",
-        max_tokens: 1400,
+        max_tokens: 4500,
         tools: [ROTEIRO_TOOL],
         tool_choice: { type: "tool", name: "salvar_roteiro" },
         messages: [{ role: "user", content: prompt }],
@@ -109,10 +112,29 @@ Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos o
       return { statusCode: response.status, body: JSON.stringify({ error: data }) };
     }
 
+    if (data.stop_reason === "max_tokens") {
+      console.error("Resposta cortada por limite de tokens:", JSON.stringify(data));
+      return {
+        statusCode: 502,
+        body: JSON.stringify({ error: "A resposta da IA foi cortada antes de terminar (limite de tokens). Tente de novo." }),
+      };
+    }
+
     const toolUse = (data.content || []).find((b) => b.type === "tool_use" && b.name === "salvar_roteiro");
     if (!toolUse || !toolUse.input) {
       console.error("Resposta sem tool_use esperado:", JSON.stringify(data));
       return { statusCode: 502, body: JSON.stringify({ error: "A IA não devolveu o roteiro estruturado.", raw: JSON.stringify(data) }) };
+    }
+
+    const camposFaltando = ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"].filter(
+      (campo) => toolUse.input[campo] === undefined
+    );
+    if (camposFaltando.length > 0) {
+      console.error("Campos faltando no roteiro:", camposFaltando, JSON.stringify(toolUse.input));
+      return {
+        statusCode: 502,
+        body: JSON.stringify({ error: `A IA não preencheu todos os campos (faltou: ${camposFaltando.join(", ")}). Tente de novo.` }),
+      };
     }
 
     // toolUse.input já vem como objeto JS pronto, validado pela própria API —
