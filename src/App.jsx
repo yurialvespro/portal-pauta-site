@@ -233,10 +233,13 @@ export default function App() {
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data?.error ? JSON.stringify(data.error) : "Falha na geração");
+      if (!response.ok) {
+        const detail = typeof data?.error === "string" ? data.error : JSON.stringify(data?.error || data);
+        throw new Error(detail);
+      }
       setScriptResult(data);
     } catch (e) {
-      setScriptError("Não foi possível gerar o roteiro agora. Confira se a chave de API está configurada no Netlify e tente de novo.");
+      setScriptError(`Não foi possível gerar o roteiro: ${e.message}`);
     } finally {
       setScriptLoading(false);
     }
