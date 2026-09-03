@@ -217,16 +217,29 @@ export default function App() {
 
   async function generateScript(item) {
     setScriptResult(null);
+    setScriptError(null);
     setScriptLoading(true);
-    // Neste site publicado (fora do Claude), não existe uma ponte segura pra chamar a
-    // IA sem expor uma chave de API no código do navegador — qualquer visitante do site
-    // conseguiria copiar essa chave. Por isso essa função continua disponível apenas
-    // na versão em artifact do Claude, onde essa ponte já existe de forma segura.
-    await new Promise(r => setTimeout(r, 400));
-    setScriptError(
-      "A geração de roteiro por IA funciona apenas na versão do Claude (artifact), não neste site publicado — isso evita expor uma chave de API no navegador. Abra o link do artifact no Claude pra gerar o roteiro desta notícia."
-    );
-    setScriptLoading(false);
+    try {
+      // Chama a função serverless do Netlify (netlify/functions/generate-script.js),
+      // que guarda a chave de API em segredo no servidor e faz a chamada real.
+      const response = await fetch("/.netlify/functions/generate-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: item.title,
+          source: item.source,
+          category: item.category,
+          summary: item.summary,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error ? JSON.stringify(data.error) : "Falha na geração");
+      setScriptResult(data);
+    } catch (e) {
+      setScriptError("Não foi possível gerar o roteiro agora. Confira se a chave de API está configurada no Netlify e tente de novo.");
+    } finally {
+      setScriptLoading(false);
+    }
   }
 
   function copyToClipboard(text, key) {
