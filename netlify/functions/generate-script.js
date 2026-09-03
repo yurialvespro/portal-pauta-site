@@ -69,19 +69,28 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON):
     const data = await response.json();
 
     if (!response.ok) {
+      console.error("Erro da API Anthropic:", JSON.stringify(data));
       return { statusCode: response.status, body: JSON.stringify({ error: data }) };
     }
 
     const textBlock = (data.content || []).find((b) => b.type === "text");
     if (!textBlock) {
+      console.error("Resposta sem bloco de texto:", JSON.stringify(data));
       return { statusCode: 502, body: JSON.stringify({ error: "Resposta sem conteúdo de texto." }) };
     }
 
     const clean = textBlock.text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    let parsed;
+    try {
+      parsed = JSON.parse(clean);
+    } catch (parseErr) {
+      console.error("Falha ao interpretar JSON do modelo. Texto bruto:", textBlock.text);
+      return { statusCode: 502, body: JSON.stringify({ error: "O modelo não devolveu um JSON válido.", raw: textBlock.text }) };
+    }
 
     return { statusCode: 200, body: JSON.stringify(parsed) };
   } catch (e) {
+    console.error("Erro inesperado na função generate-script:", e);
     return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
   }
 }
