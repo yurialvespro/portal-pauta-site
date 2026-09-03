@@ -80,9 +80,13 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON):
     }
 
     const clean = textBlock.text.replace(/```json|```/g, "").trim();
+    const firstBrace = clean.indexOf("{");
+    const lastBrace = clean.lastIndexOf("}");
+    const jsonSlice = firstBrace !== -1 && lastBrace !== -1 ? clean.slice(firstBrace, lastBrace + 1) : clean;
+
     let parsed;
     try {
-      parsed = JSON.parse(clean);
+      parsed = JSON.parse(jsonSlice);
     } catch (parseErr) {
       console.error("Falha ao interpretar JSON do modelo. Texto bruto:", textBlock.text);
       return { statusCode: 502, body: JSON.stringify({ error: "O modelo não devolveu um JSON válido.", raw: textBlock.text }) };
