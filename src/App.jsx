@@ -722,11 +722,14 @@ function ArticleView({
 
         {scriptResult && (
           <div style={{ marginTop: 10, borderTop: `1px solid ${C.pebble}`, paddingTop: 22 }}>
-            <div className="flex items-center justify-between" style={{ marginBottom: 18 }}>
+            <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
               <span style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.1em", color: C.violet, fontWeight: 700 }}>Roteiro gerado</span>
               <button onClick={() => copyFullScript(scriptResult)} className="flex items-center gap-1.5" style={{ background: "transparent", border: `1px solid ${C.pebble}`, borderRadius: RADIUS.buttons, padding: "7px 14px", color: copied === "full" ? C.violet : C.slate, fontSize: 12.5, cursor: "pointer", fontWeight: 500, fontFamily: "'Poppins', sans-serif" }}>
                 {copied === "full" ? <Check size={13} /> : <Copy size={13} />} {copied === "full" ? "Copiado!" : "Copiar roteiro completo"}
               </button>
+            </div>
+            <div style={{ fontSize: 12, color: C.iron, marginBottom: 16 }}>
+              {estimateNarrationTime(scriptResult)}
             </div>
 
             <Block label="Gancho inicial" text={scriptResult.gancho} onCopy={() => copyToClipboard(scriptResult.gancho, "gancho")} copied={copied === "gancho"} />
@@ -765,6 +768,15 @@ function ArticleView({
       </div>
     </div>
   );
+}
+
+function estimateNarrationTime(result) {
+  const fullText = [result.gancho, result.roteiro, result.encerramento].filter(Boolean).join(" ");
+  const wordCount = fullText.trim().split(/\s+/).filter(Boolean).length;
+  const minutes = wordCount / 150; // ritmo de fala natural em português
+  const min = Math.floor(minutes);
+  const sec = Math.round((minutes - min) * 60);
+  return `≈ ${min}min${sec.toString().padStart(2, "0")}s de narração estimada · ${wordCount} palavras`;
 }
 
 function SectionLabel({ text }) {
