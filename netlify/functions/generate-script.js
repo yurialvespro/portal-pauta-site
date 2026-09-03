@@ -6,6 +6,44 @@
 //   Nome:  ANTHROPIC_API_KEY
 //   Valor: sua chave começando com sk-ant-...
 
+// Corrige o problema mais comum de JSON "quebrado" vindo de modelos de IA: quebras de
+// linha de verdade dentro de um valor de texto (que o JSON exige que venham como \n
+// escapado, não como uma quebra de linha literal). Percorre o texto caractere a caractere,
+// sabendo quando está dentro de uma string, e só escapa o que estiver dentro dela.
+function escapeControlCharsInsideStrings(str) {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inString) {
+      if (escaped) {
+        result += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        result += ch;
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        result += ch;
+        continue;
+      }
+      if (ch === "\n") { result += "\\n"; continue; }
+      if (ch === "\r") { result += "\\r"; continue; }
+      if (ch === "\t") { result += "\\t"; continue; }
+      result += ch;
+    } else {
+      if (ch === '"') inString = true;
+      result += ch;
+    }
+  }
+  return result;
+}
+
 export async function handler(event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Método não permitido" }) };
@@ -84,10 +122,11 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON). Regra críti
     const firstBrace = clean.indexOf("{");
     const lastBrace = clean.lastIndexOf("}");
     const jsonSlice = firstBrace !== -1 && lastBrace !== -1 ? clean.slice(firstBrace, lastBrace + 1) : clean;
+    const sanitized = escapeControlCharsInsideStrings(jsonSlice);
 
     let parsed;
     try {
-      parsed = JSON.parse(jsonSlice);
+      parsed = JSON.parse(sanitized);
     } catch (parseErr) {
       console.error("Falha ao interpretar JSON do modelo. Texto bruto:", textBlock.text);
       return { statusCode: 502, body: JSON.stringify({ error: "O modelo não devolveu um JSON válido.", raw: textBlock.text }) };
