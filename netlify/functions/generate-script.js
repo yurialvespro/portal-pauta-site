@@ -39,7 +39,8 @@ Fonte: ${source || "desconhecida"}
 Categoria: ${category || "Geral"}
 Resumo: ${summary || title}
 
-Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON):
+Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON). Regra crítica de formatação: dentro dos valores de texto, NUNCA use aspas duplas (") para citar falas ou expressões — isso quebra a estrutura do JSON. Sempre que precisar citar algo, use aspas simples (').
+
 {
   "gancho": "as 2-3 primeiras frases do roteiro, com tensão/pergunta/promessa nos primeiros segundos",
   "roteiro": "roteiro completo em 4-6 parágrafos curtos, já com o enquadramento de direita descrito acima, pronto para narração",
