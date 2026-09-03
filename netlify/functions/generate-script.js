@@ -5,44 +5,48 @@
 // Configure em: Netlify → Project configuration → Environment variables
 //   Nome:  ANTHROPIC_API_KEY
 //   Valor: sua chave começando com sk-ant-...
+//
+// Usa "tool use" da API da Anthropic em vez de pedir texto solto e tentar
+// converter pra JSON depois: a API valida e estrutura o retorno pela gente,
+// então nunca mais quebra por causa de aspas ou quebra de linha dentro do texto.
 
-// Corrige o problema mais comum de JSON "quebrado" vindo de modelos de IA: quebras de
-// linha de verdade dentro de um valor de texto (que o JSON exige que venham como \n
-// escapado, não como uma quebra de linha literal). Percorre o texto caractere a caractere,
-// sabendo quando está dentro de uma string, e só escapa o que estiver dentro dela.
-function escapeControlCharsInsideStrings(str) {
-  let result = "";
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    if (inString) {
-      if (escaped) {
-        result += ch;
-        escaped = false;
-        continue;
-      }
-      if (ch === "\\") {
-        result += ch;
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = false;
-        result += ch;
-        continue;
-      }
-      if (ch === "\n") { result += "\\n"; continue; }
-      if (ch === "\r") { result += "\\r"; continue; }
-      if (ch === "\t") { result += "\\t"; continue; }
-      result += ch;
-    } else {
-      if (ch === '"') inString = true;
-      result += ch;
-    }
-  }
-  return result;
-}
+const ROTEIRO_TOOL = {
+  name: "salvar_roteiro",
+  description: "Salva o roteiro de vídeo gerado, já estruturado em campos.",
+  input_schema: {
+    type: "object",
+    properties: {
+      gancho: {
+        type: "string",
+        description: "As 2-3 primeiras frases do roteiro, com tensão/pergunta/promessa nos primeiros segundos.",
+      },
+      roteiro: {
+        type: "string",
+        description: "Roteiro completo em 4-6 parágrafos curtos, com o enquadramento de direita, pronto para narração.",
+      },
+      encerramento: {
+        type: "string",
+        description:
+          "Fechamento do roteiro, 1 parágrafo curto, retomando o tema específico do vídeo antes de convidar a se inscrever no canal, ativar o sininho e comentar a opinião sobre o assunto — sem soar genérico.",
+      },
+      titulos: {
+        type: "array",
+        items: { type: "string" },
+        description: "3 opções de título para o YouTube, cada uma com até 70 caracteres.",
+      },
+      descricao_seo: {
+        type: "string",
+        description: "Descrição de até 4 linhas para o YouTube, com a palavra-chave principal nas primeiras 150 caracteres.",
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description: "12 a 18 tags curtas para o YouTube, sem #.",
+      },
+    },
+    required: ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"],
+  },
+};
 
 export async function handler(event) {
   if (event.httpMethod !== "POST") {
@@ -77,16 +81,7 @@ Fonte: ${source || "desconhecida"}
 Categoria: ${category || "Geral"}
 Resumo: ${summary || title}
 
-Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON). Regra crítica de formatação: dentro dos valores de texto, NUNCA use aspas duplas (") para citar falas ou expressões — isso quebra a estrutura do JSON. Sempre que precisar citar algo, use aspas simples (').
-
-{
-  "gancho": "as 2-3 primeiras frases do roteiro, com tensão/pergunta/promessa nos primeiros segundos",
-  "roteiro": "roteiro completo em 4-6 parágrafos curtos, já com o enquadramento de direita descrito acima, pronto para narração",
-  "encerramento": "fechamento do roteiro, em 1 parágrafo curto e natural, retomando o tema específico do vídeo antes de convidar a se inscrever no canal, ativar o sininho de notificações e comentar a opinião sobre o assunto tratado — sem soar genérico, deve parecer parte do mesmo raciocínio do roteiro e não um texto colado no final",
-  "titulos": ["opção 1 de título, até 70 caracteres", "opção 2", "opção 3"],
-  "descricao_seo": "descrição de até 4 linhas para o YouTube, palavra-chave principal nas primeiras 150 caracteres",
-  "tags": ["12 a 18 tags curtas para o YouTube, sem #"]
-}`;
+Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos os campos.`;
 
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -101,6 +96,8 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON). Regra críti
         // ainda mais, troque por "claude-haiku-4-5-20251001".
         model: "claude-sonnet-5",
         max_tokens: 1400,
+        tools: [ROTEIRO_TOOL],
+        tool_choice: { type: "tool", name: "salvar_roteiro" },
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -112,27 +109,15 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON). Regra críti
       return { statusCode: response.status, body: JSON.stringify({ error: data }) };
     }
 
-    const textBlock = (data.content || []).find((b) => b.type === "text");
-    if (!textBlock) {
-      console.error("Resposta sem bloco de texto:", JSON.stringify(data));
-      return { statusCode: 502, body: JSON.stringify({ error: "Resposta sem conteúdo de texto." }) };
+    const toolUse = (data.content || []).find((b) => b.type === "tool_use" && b.name === "salvar_roteiro");
+    if (!toolUse || !toolUse.input) {
+      console.error("Resposta sem tool_use esperado:", JSON.stringify(data));
+      return { statusCode: 502, body: JSON.stringify({ error: "A IA não devolveu o roteiro estruturado.", raw: JSON.stringify(data) }) };
     }
 
-    const clean = textBlock.text.replace(/```json|```/g, "").trim();
-    const firstBrace = clean.indexOf("{");
-    const lastBrace = clean.lastIndexOf("}");
-    const jsonSlice = firstBrace !== -1 && lastBrace !== -1 ? clean.slice(firstBrace, lastBrace + 1) : clean;
-    const sanitized = escapeControlCharsInsideStrings(jsonSlice);
-
-    let parsed;
-    try {
-      parsed = JSON.parse(sanitized);
-    } catch (parseErr) {
-      console.error("Falha ao interpretar JSON do modelo. Texto bruto:", textBlock.text);
-      return { statusCode: 502, body: JSON.stringify({ error: "O modelo não devolveu um JSON válido.", raw: textBlock.text }) };
-    }
-
-    return { statusCode: 200, body: JSON.stringify(parsed) };
+    // toolUse.input já vem como objeto JS pronto, validado pela própria API —
+    // sem precisar interpretar texto solto nem arriscar quebrar em aspas/quebras de linha.
+    return { statusCode: 200, body: JSON.stringify(toolUse.input) };
   } catch (e) {
     console.error("Erro inesperado na função generate-script:", e);
     return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
