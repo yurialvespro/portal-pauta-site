@@ -234,8 +234,9 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) {
-        const detail = typeof data?.error === "string" ? data.error : JSON.stringify(data?.error || data);
-        throw new Error(detail);
+        const base = typeof data?.error === "string" ? data.error : JSON.stringify(data?.error || data);
+        const rawHint = data?.raw ? ` (resposta bruta: "${String(data.raw).slice(0, 160)}...")` : "";
+        throw new Error(base + rawHint);
       }
       setScriptResult(data);
     } catch (e) {
