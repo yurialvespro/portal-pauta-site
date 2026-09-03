@@ -6,7 +6,7 @@
 //   Nome:  ANTHROPIC_API_KEY
 //   Valor: sua chave começando com sk-ant-...
 
-exports.handler = async function (event) {
+export async function handler(event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Método não permitido" }) };
   }
@@ -84,4 +84,4 @@ Gere APENAS um JSON válido (sem markdown, sem texto fora do JSON):
   } catch (e) {
     return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
   }
-};
+}
