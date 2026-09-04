@@ -1,17 +1,14 @@
-// Função serverless do Netlify (formato novo, streaming) — roda no servidor, não no
-// navegador do visitante. A chave de API fica só aqui, lida de uma variável de
-// ambiente — nunca é enviada pro código do site.
+// Função serverless (roda no servidor do Netlify, não no navegador do visitante).
+// A chave de API fica só aqui, lida de uma variável de ambiente — nunca é
+// enviada pro código do site, então visitantes não conseguem roubá-la.
 //
 // Configure em: Netlify → Project configuration → Environment variables
 //   Nome:  ANTHROPIC_API_KEY
 //   Valor: sua chave começando com sk-ant-...
 //
-// Por que streaming? Funções "compradas" (buffer, tudo de uma vez no final) do
-// Netlify têm um teto de 30s de execução. Roteiros longos (7-8min de narração)
-// podem passar disso. Funções que devolvem a resposta em streaming (por partes,
-// continuamente) têm um teto maior, de 60s — por isso retransmitimos a resposta
-// da Anthropic direto pro navegador à medida que ela é gerada, em vez de esperar
-// tudo terminar aqui no servidor pra só então responder.
+// Usa "tool use" da API da Anthropic: a resposta já vem estruturada e validada
+// pela própria API, sem depender de interpretar texto solto (evita o erro de
+// "JSON inválido" por aspas ou quebras de linha dentro do texto).
 
 const ROTEIRO_TOOL = {
   name: "salvar_roteiro",
@@ -26,7 +23,7 @@ const ROTEIRO_TOOL = {
       roteiro: {
         type: "string",
         description:
-          "Roteiro completo, em 10 a 14 parágrafos, com o enquadramento de direita, pronto para narração. Precisa render aproximadamente 7 a 8 minutos falado (cerca de 1000 a 1200 palavras somando gancho + roteiro + encerramento, a ~150 palavras/minuto). Desenvolva contexto, antecedentes do tema, diferentes ângulos da mesma linha editorial e implicações — sem inventar fatos, números, datas ou falas específicas que não estejam no resumo da notícia ou no conhecimento público amplamente estabelecido.",
+          "Roteiro completo, em 7 a 9 parágrafos, com o enquadramento de direita, pronto para narração. Precisa render aproximadamente 5 a 6 minutos falado (cerca de 750 a 900 palavras somando gancho + roteiro + encerramento, a ~150 palavras/minuto). Desenvolva contexto, antecedentes do tema e implicações — sem inventar fatos, números, datas ou falas específicas que não estejam no resumo da notícia ou no conhecimento público amplamente estabelecido.",
       },
       encerramento: {
         type: "string",
@@ -52,31 +49,29 @@ const ROTEIRO_TOOL = {
   },
 };
 
-export default async (req) => {
-  const jsonHeaders = { "content-type": "application/json" };
-
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Método não permitido" }), { status: 405, headers: jsonHeaders });
+export async function handler(event) {
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: JSON.stringify({ error: "Método não permitido" }) };
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: "ANTHROPIC_API_KEY não configurada nas variáveis de ambiente do Netlify." }),
-      { status: 500, headers: jsonHeaders }
-    );
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "ANTHROPIC_API_KEY não configurada nas variáveis de ambiente do Netlify." }),
+    };
   }
 
   let payload;
   try {
-    payload = await req.json();
+    payload = JSON.parse(event.body || "{}");
   } catch (e) {
-    return new Response(JSON.stringify({ error: "Corpo da requisição inválido." }), { status: 400, headers: jsonHeaders });
+    return { statusCode: 400, body: JSON.stringify({ error: "Corpo da requisição inválido." }) };
   }
 
   const { title, source, category, summary } = payload;
   if (!title) {
-    return new Response(JSON.stringify({ error: "Faltou o título da notícia." }), { status: 400, headers: jsonHeaders });
+    return { statusCode: 400, body: JSON.stringify({ error: "Faltou o título da notícia." }) };
   }
 
   const prompt = `Você é roteirista de um canal de YouTube de política brasileira. O canal tem linha editorial genuinamente de direita/conservadora — não neutra. Ao narrar o fato, adote o ponto de vista, o enquadramento e as ênfases que um comentarista de direita brasileiro real usaria (crítica a excessos do STF, defesa de liberdades individuais, ceticismo em relação a pautas identificadas com a esquerda, valorização de família e livre mercado quando pertinente ao tema) — sem inventar fatos que não estejam na notícia, apenas o enquadramento e o tom devem refletir esse ponto de vista.
@@ -87,13 +82,12 @@ Fonte: ${source || "desconhecida"}
 Categoria: ${category || "Geral"}
 Resumo: ${summary || title}
 
-Meta de duração: o roteiro completo (gancho + corpo + encerramento) precisa render entre 7 e 8 minutos de narração — em torno de 1000 a 1200 palavras no total, a um ritmo de fala natural de ~150 palavras por minuto. Como o resumo da notícia é curto, ganhe esse tempo desenvolvendo contexto (antecedentes do tema, como isso se encaixa no cenário político mais amplo), explicando implicações, e reforçando o enquadramento de direita sob diferentes ângulos — não inventando fatos, números, datas ou falas específicas que não estejam no resumo ou no conhecimento público já estabelecido sobre o tema.
+Meta de duração: o roteiro completo (gancho + corpo + encerramento) precisa render entre 5 e 6 minutos de narração — em torno de 750 a 900 palavras no total, a um ritmo de fala natural de ~150 palavras por minuto. Como o resumo da notícia é curto, ganhe esse tempo desenvolvendo contexto e implicações — não inventando fatos, números, datas ou falas específicas que não estejam no resumo ou no conhecimento público já estabelecido sobre o tema.
 
 Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos os campos.`;
 
-  let anthropicResp;
   try {
-    anthropicResp = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -102,31 +96,48 @@ Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos o
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 4500,
-        stream: true,
+        max_tokens: 3500,
         tools: [ROTEIRO_TOOL],
         tool_choice: { type: "tool", name: "salvar_roteiro" },
         messages: [{ role: "user", content: prompt }],
       }),
     });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Erro da API Anthropic:", JSON.stringify(data));
+      return { statusCode: response.status, body: JSON.stringify({ error: data }) };
+    }
+
+    if (data.stop_reason === "max_tokens") {
+      console.error("Resposta cortada por limite de tokens:", JSON.stringify(data));
+      return {
+        statusCode: 502,
+        body: JSON.stringify({ error: "A resposta da IA foi cortada antes de terminar (limite de tokens). Tente de novo." }),
+      };
+    }
+
+    const toolUse = (data.content || []).find((b) => b.type === "tool_use" && b.name === "salvar_roteiro");
+    if (!toolUse || !toolUse.input) {
+      console.error("Resposta sem tool_use esperado:", JSON.stringify(data));
+      return { statusCode: 502, body: JSON.stringify({ error: "A IA não devolveu o roteiro estruturado.", raw: JSON.stringify(data) }) };
+    }
+
+    const camposFaltando = ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"].filter(
+      (campo) => toolUse.input[campo] === undefined
+    );
+    if (camposFaltando.length > 0) {
+      console.error("Campos faltando no roteiro:", camposFaltando, JSON.stringify(toolUse.input));
+      return {
+        statusCode: 502,
+        body: JSON.stringify({ error: `A IA não preencheu todos os campos (faltou: ${camposFaltando.join(", ")}). Tente de novo.` }),
+      };
+    }
+
+    return { statusCode: 200, body: JSON.stringify(toolUse.input) };
   } catch (e) {
-    return new Response(JSON.stringify({ error: `Falha ao contatar a API: ${String(e)}` }), { status: 502, headers: jsonHeaders });
+    console.error("Erro inesperado na função generate-script:", e);
+    return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
   }
-
-  if (!anthropicResp.ok || !anthropicResp.body) {
-    const errText = await anthropicResp.text().catch(() => "");
-    return new Response(JSON.stringify({ error: errText || `Erro HTTP ${anthropicResp.status}` }), {
-      status: anthropicResp.status || 502,
-      headers: jsonHeaders,
-    });
-  }
-
-  // Retransmite o stream de eventos (SSE) da Anthropic direto pro navegador,
-  // sem esperar terminar aqui — o front-end acumula os pedaços e monta o
-  // resultado final. Isso mantém a conexão continuamente ativa, o que evita
-  // o teto de função "comprada" e usa o teto maior de função em streaming.
-  return new Response(anthropicResp.body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-};
+}
