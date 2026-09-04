@@ -87,21 +87,35 @@ Meta de duração: o roteiro completo (gancho + corpo + encerramento) precisa re
 Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos os campos.`;
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 3500,
-        tools: [ROTEIRO_TOOL],
-        tool_choice: { type: "tool", name: "salvar_roteiro" },
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const startedAt = Date.now();
+    console.log("Chamando API da Anthropic...", { model: "claude-haiku-4-5-20251001", apiKeyPrefix: apiKey.slice(0, 12) });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+    let response;
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 3500,
+          tools: [ROTEIRO_TOOL],
+          tool_choice: { type: "tool", name: "salvar_roteiro" },
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    console.log(`Resposta da Anthropic chegou depois de ${Date.now() - startedAt}ms, status ${response.status}`);
 
     const data = await response.json();
 
@@ -137,6 +151,13 @@ Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos o
 
     return { statusCode: 200, body: JSON.stringify(toolUse.input) };
   } catch (e) {
+    if (e.name === "AbortError") {
+      console.error("Chamada à Anthropic abortada: passou de 25s esperando resposta (rede/DNS/API travada).");
+      return {
+        statusCode: 504,
+        body: JSON.stringify({ error: "A chamada para a IA travou esperando resposta por mais de 25 segundos (não é sobre o tamanho do roteiro — parece ser rede ou a API travando)." }),
+      };
+    }
     console.error("Erro inesperado na função generate-script:", e);
     return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
   }
