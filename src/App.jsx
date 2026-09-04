@@ -220,8 +220,9 @@ export default function App() {
     setScriptError(null);
     setScriptLoading(true);
     try {
-      // Chama a função serverless do Netlify (netlify/functions/generate-script.js),
-      // que guarda a chave de API em segredo no servidor e faz a chamada real.
+      // Chama a função serverless do Netlify (netlify/functions/generate-script.js).
+      // A resposta vem em streaming (partes contínuas), não tudo de uma vez —
+      // por isso lemos manualmente em vez de usar response.json().
       const response = await fetch("/.netlify/functions/generate-script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -232,13 +233,65 @@ export default function App() {
           summary: item.summary,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) {
+
+      const contentType = response.headers.get("content-type") || "";
+
+      // Se não veio como stream de eventos, é uma resposta de erro em JSON normal.
+      if (!contentType.includes("text/event-stream")) {
+        const data = await response.json().catch(() => ({}));
         const base = typeof data?.error === "string" ? data.error : JSON.stringify(data?.error || data);
-        const rawHint = data?.raw ? ` (resposta bruta: "${String(data.raw).slice(0, 500)}...")` : "";
-        throw new Error(base + rawHint);
+        throw new Error(base || `Erro HTTP ${response.status}`);
       }
-      setScriptResult(data);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let jsonAccumulator = "";
+      let sawError = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Eventos SSE vêm separados por linha em branco.
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop(); // guarda o pedaço incompleto pra próxima leitura
+
+        for (const frame of frames) {
+          const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          const jsonStr = dataLine.slice(5).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+
+          let evt;
+          try {
+            evt = JSON.parse(jsonStr);
+          } catch {
+            continue;
+          }
+
+          if (evt.type === "error") {
+            sawError = evt.error?.message || "Erro durante a geração";
+          }
+          if (evt.type === "content_block_delta" && evt.delta?.type === "input_json_delta") {
+            jsonAccumulator += evt.delta.partial_json || "";
+          }
+        }
+      }
+
+      if (sawError) throw new Error(sawError);
+      if (!jsonAccumulator) throw new Error("A IA não devolveu nenhum conteúdo.");
+
+      const parsed = JSON.parse(jsonAccumulator);
+      const camposFaltando = ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"].filter(
+        (c) => parsed[c] === undefined
+      );
+      if (camposFaltando.length > 0) {
+        throw new Error(`A IA não preencheu todos os campos (faltou: ${camposFaltando.join(", ")}). Tente de novo.`);
+      }
+
+      setScriptResult(parsed);
     } catch (e) {
       setScriptError(`Não foi possível gerar o roteiro: ${e.message}`);
     } finally {
