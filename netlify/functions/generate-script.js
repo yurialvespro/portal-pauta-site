@@ -1,18 +1,20 @@
 // Função serverless (roda no servidor do Netlify, não no navegador do visitante).
-// A chave de API fica só aqui, lida de uma variável de ambiente — nunca é
-// enviada pro código do site, então visitantes não conseguem roubá-la.
+// A chave de API fica só aqui, lida de uma variável de ambiente.
 //
 // Configure em: Netlify → Project configuration → Environment variables
 //   Nome:  ANTHROPIC_API_KEY
 //   Valor: sua chave começando com sk-ant-...
 //
-// Usa "tool use" da API da Anthropic: a resposta já vem estruturada e validada
-// pela própria API, sem depender de interpretar texto solto (evita o erro de
-// "JSON inválido" por aspas ou quebras de linha dentro do texto).
+// IMPORTANTE — por que o trabalho é dividido em duas etapas:
+// Funções do Netlify têm um teto rígido de 30s. Gerar roteiro longo + títulos +
+// descrição + tags de uma vez só estourava esse tempo. Agora o front-end chama
+// esta função DUAS vezes: etapa "roteiro" (gancho/roteiro/encerramento) e etapa
+// "metadados" (títulos/descrição/tags). Cada uma é bem mais curta e termina com
+// folga dentro do limite.
 
-const ROTEIRO_TOOL = {
+const TOOL_ROTEIRO = {
   name: "salvar_roteiro",
-  description: "Salva o roteiro de vídeo gerado, já estruturado em campos.",
+  description: "Salva o roteiro narrado do vídeo.",
   input_schema: {
     type: "object",
     properties: {
@@ -23,13 +25,24 @@ const ROTEIRO_TOOL = {
       roteiro: {
         type: "string",
         description:
-          "Roteiro completo, em 7 a 9 parágrafos, com o enquadramento de direita, pronto para narração. Precisa render aproximadamente 5 a 6 minutos falado (cerca de 750 a 900 palavras somando gancho + roteiro + encerramento, a ~150 palavras/minuto). Desenvolva contexto, antecedentes do tema e implicações — sem inventar fatos, números, datas ou falas específicas que não estejam no resumo da notícia ou no conhecimento público amplamente estabelecido.",
+          "Roteiro completo em 8 a 10 parágrafos, com enquadramento de direita, pronto para narração. Cerca de 800 a 1000 palavras. Desenvolva contexto, antecedentes e implicações — sem inventar fatos, números, datas ou falas que não estejam no resumo da notícia.",
       },
       encerramento: {
         type: "string",
         description:
-          "Fechamento do roteiro, 1 parágrafo curto, retomando o tema específico do vídeo antes de convidar a se inscrever no canal, ativar o sininho e comentar a opinião sobre o assunto — sem soar genérico.",
+          "Fechamento em 1 parágrafo curto, retomando o tema do vídeo antes de convidar a se inscrever, ativar o sininho e comentar a opinião — sem soar genérico.",
       },
+    },
+    required: ["gancho", "roteiro", "encerramento"],
+  },
+};
+
+const TOOL_METADADOS = {
+  name: "salvar_metadados",
+  description: "Salva os metadados de publicação do vídeo no YouTube.",
+  input_schema: {
+    type: "object",
+    properties: {
       titulos: {
         type: "array",
         items: { type: "string" },
@@ -37,7 +50,7 @@ const ROTEIRO_TOOL = {
       },
       descricao_seo: {
         type: "string",
-        description: "Descrição de até 4 linhas para o YouTube, com a palavra-chave principal nas primeiras 150 caracteres.",
+        description: "Descrição de até 4 linhas, com a palavra-chave principal nas primeiras 150 caracteres.",
       },
       tags: {
         type: "array",
@@ -45,9 +58,50 @@ const ROTEIRO_TOOL = {
         description: "12 a 18 tags curtas para o YouTube, sem #.",
       },
     },
-    required: ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"],
+    required: ["titulos", "descricao_seo", "tags"],
   },
 };
+
+const LINHA_EDITORIAL = `Você trabalha para um canal de YouTube de política brasileira com linha editorial genuinamente de direita/conservadora — não neutra. Adote o ponto de vista, o enquadramento e as ênfases que um comentarista de direita brasileiro real usaria (crítica a excessos do STF, defesa de liberdades individuais, ceticismo em relação a pautas identificadas com a esquerda, valorização de família e livre mercado quando pertinente) — sem inventar fatos que não estejam na notícia.`;
+
+async function chamarAnthropic(apiKey, { prompt, tool, maxTokens }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 24000);
+
+  let response;
+  try {
+    response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: maxTokens,
+        tools: [tool],
+        tool_choice: { type: "tool", name: tool.name },
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    const msg = data?.error?.message || JSON.stringify(data);
+    throw new Error(`API da Anthropic: ${msg}`);
+  }
+
+  const toolUse = (data.content || []).find((b) => b.type === "tool_use");
+  if (!toolUse?.input) {
+    throw new Error("A IA não devolveu o conteúdo estruturado.");
+  }
+  return toolUse.input;
+}
 
 export async function handler(event) {
   if (event.httpMethod !== "POST") {
@@ -69,96 +123,56 @@ export async function handler(event) {
     return { statusCode: 400, body: JSON.stringify({ error: "Corpo da requisição inválido." }) };
   }
 
-  const { title, source, category, summary } = payload;
+  const { etapa, title, source, category, summary, roteiroGerado } = payload;
   if (!title) {
     return { statusCode: 400, body: JSON.stringify({ error: "Faltou o título da notícia." }) };
   }
 
-  const prompt = `Você é roteirista de um canal de YouTube de política brasileira. O canal tem linha editorial genuinamente de direita/conservadora — não neutra. Ao narrar o fato, adote o ponto de vista, o enquadramento e as ênfases que um comentarista de direita brasileiro real usaria (crítica a excessos do STF, defesa de liberdades individuais, ceticismo em relação a pautas identificadas com a esquerda, valorização de família e livre mercado quando pertinente ao tema) — sem inventar fatos que não estejam na notícia, apenas o enquadramento e o tom devem refletir esse ponto de vista.
-
-Notícia:
+  const contextoNoticia = `Notícia:
 Título: "${title}"
 Fonte: ${source || "desconhecida"}
 Categoria: ${category || "Geral"}
-Resumo: ${summary || title}
-
-Meta de duração: o roteiro completo (gancho + corpo + encerramento) precisa render entre 5 e 6 minutos de narração — em torno de 750 a 900 palavras no total, a um ritmo de fala natural de ~150 palavras por minuto. Como o resumo da notícia é curto, ganhe esse tempo desenvolvendo contexto e implicações — não inventando fatos, números, datas ou falas específicas que não estejam no resumo ou no conhecimento público já estabelecido sobre o tema.
-
-Use a ferramenta "salvar_roteiro" para entregar o resultado, preenchendo todos os campos.`;
+Resumo: ${summary || title}`;
 
   try {
-    const startedAt = Date.now();
-    console.log("Chamando API da Anthropic...", { model: "claude-haiku-4-5-20251001", apiKeyPrefix: apiKey.slice(0, 12) });
+    const inicio = Date.now();
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    if (etapa === "metadados") {
+      const prompt = `${LINHA_EDITORIAL}
 
-    let response;
-    try {
-      response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 3500,
-          tools: [ROTEIRO_TOOL],
-          tool_choice: { type: "tool", name: "salvar_roteiro" },
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-    } finally {
-      clearTimeout(timeoutId);
+${contextoNoticia}
+
+Roteiro já produzido para este vídeo:
+${(roteiroGerado || "").slice(0, 4000)}
+
+Gere os metadados de publicação no YouTube usando a ferramenta "salvar_metadados".`;
+
+      const resultado = await chamarAnthropic(apiKey, { prompt, tool: TOOL_METADADOS, maxTokens: 1000 });
+      console.log(`Etapa metadados concluída em ${Date.now() - inicio}ms`);
+      return { statusCode: 200, body: JSON.stringify(resultado) };
     }
 
-    console.log(`Resposta da Anthropic chegou depois de ${Date.now() - startedAt}ms, status ${response.status}`);
+    // etapa padrão: roteiro
+    const prompt = `${LINHA_EDITORIAL}
 
-    const data = await response.json();
+${contextoNoticia}
 
-    if (!response.ok) {
-      console.error("Erro da API Anthropic:", JSON.stringify(data));
-      return { statusCode: response.status, body: JSON.stringify({ error: data }) };
-    }
+Meta de duração: o roteiro completo (gancho + corpo + encerramento) deve render entre 6 e 7 minutos de narração — cerca de 900 a 1050 palavras no total, a ~150 palavras por minuto. Como o resumo é curto, ganhe esse tempo desenvolvendo contexto e implicações, não inventando fatos.
 
-    if (data.stop_reason === "max_tokens") {
-      console.error("Resposta cortada por limite de tokens:", JSON.stringify(data));
-      return {
-        statusCode: 502,
-        body: JSON.stringify({ error: "A resposta da IA foi cortada antes de terminar (limite de tokens). Tente de novo." }),
-      };
-    }
+Use a ferramenta "salvar_roteiro" para entregar o resultado.`;
 
-    const toolUse = (data.content || []).find((b) => b.type === "tool_use" && b.name === "salvar_roteiro");
-    if (!toolUse || !toolUse.input) {
-      console.error("Resposta sem tool_use esperado:", JSON.stringify(data));
-      return { statusCode: 502, body: JSON.stringify({ error: "A IA não devolveu o roteiro estruturado.", raw: JSON.stringify(data) }) };
-    }
-
-    const camposFaltando = ["gancho", "roteiro", "encerramento", "titulos", "descricao_seo", "tags"].filter(
-      (campo) => toolUse.input[campo] === undefined
-    );
-    if (camposFaltando.length > 0) {
-      console.error("Campos faltando no roteiro:", camposFaltando, JSON.stringify(toolUse.input));
-      return {
-        statusCode: 502,
-        body: JSON.stringify({ error: `A IA não preencheu todos os campos (faltou: ${camposFaltando.join(", ")}). Tente de novo.` }),
-      };
-    }
-
-    return { statusCode: 200, body: JSON.stringify(toolUse.input) };
+    const resultado = await chamarAnthropic(apiKey, { prompt, tool: TOOL_ROTEIRO, maxTokens: 2500 });
+    console.log(`Etapa roteiro concluída em ${Date.now() - inicio}ms`);
+    return { statusCode: 200, body: JSON.stringify(resultado) };
   } catch (e) {
     if (e.name === "AbortError") {
-      console.error("Chamada à Anthropic abortada: passou de 25s esperando resposta (rede/DNS/API travada).");
+      console.error("Chamada à Anthropic abortada após 24s.");
       return {
         statusCode: 504,
-        body: JSON.stringify({ error: "A chamada para a IA travou esperando resposta por mais de 25 segundos (não é sobre o tamanho do roteiro — parece ser rede ou a API travando)." }),
+        body: JSON.stringify({ error: "A IA demorou demais para responder (mais de 24s). Tente de novo." }),
       };
     }
-    console.error("Erro inesperado na função generate-script:", e);
-    return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
+    console.error("Erro na função generate-script:", e);
+    return { statusCode: 500, body: JSON.stringify({ error: String(e.message || e) }) };
   }
 }

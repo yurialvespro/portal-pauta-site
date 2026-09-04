@@ -219,26 +219,59 @@ export default function App() {
     setScriptResult(null);
     setScriptError(null);
     setScriptLoading(true);
-    try {
-      // Chama a função serverless do Netlify (netlify/functions/generate-script.js),
-      // que guarda a chave de API em segredo no servidor e faz a chamada real.
+
+    // Faz uma chamada à função serverless e devolve o JSON, com mensagem clara
+    // caso o servidor responda uma página de erro em vez de JSON.
+    async function chamarEtapa(corpo) {
       const response = await fetch("/.netlify/functions/generate-script", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: item.title,
-          source: item.source,
-          category: item.category,
-          summary: item.summary,
-        }),
+        body: JSON.stringify(corpo),
       });
-      const data = await response.json();
+
+      const rawText = await response.text();
+
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        if (rawText.trim().startsWith("<")) {
+          throw new Error(
+            "O servidor devolveu uma página de erro em vez do conteúdo — normalmente é o tempo limite de 30s do Netlify. Tente de novo."
+          );
+        }
+        throw new Error(`Resposta inesperada do servidor: ${rawText.slice(0, 200)}`);
+      }
+
       if (!response.ok) {
         const base = typeof data?.error === "string" ? data.error : JSON.stringify(data?.error || data);
-        const rawHint = data?.raw ? ` (resposta bruta: "${String(data.raw).slice(0, 300)}...")` : "";
-        throw new Error(base + rawHint);
+        throw new Error(base);
       }
-      setScriptResult(data);
+      return data;
+    }
+
+    try {
+      const base = {
+        title: item.title,
+        source: item.source,
+        category: item.category,
+        summary: item.summary,
+      };
+
+      // Etapa 1 — roteiro narrado (a parte mais longa, sozinha cabe no limite de tempo).
+      const roteiro = await chamarEtapa({ ...base, etapa: "roteiro" });
+
+      // Mostra já o roteiro enquanto os metadados ainda são gerados.
+      setScriptResult({ ...roteiro, titulos: [], descricao_seo: "", tags: [] });
+
+      // Etapa 2 — títulos, descrição e tags, com base no roteiro que acabou de sair.
+      const metadados = await chamarEtapa({
+        ...base,
+        etapa: "metadados",
+        roteiroGerado: [roteiro.gancho, roteiro.roteiro, roteiro.encerramento].filter(Boolean).join("\n\n"),
+      });
+
+      setScriptResult({ ...roteiro, ...metadados });
     } catch (e) {
       setScriptError(`Não foi possível gerar o roteiro: ${e.message}`);
     } finally {
